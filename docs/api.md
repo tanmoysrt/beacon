@@ -1,6 +1,6 @@
 # API Reference
 
-Base URL: `http://host:port`. WebSocket URL: `ws://host:port/ws`.
+Base URL: `http://host:port`. WebSocket URL: `ws://host:port/events`.
 
 All messages use JSON. Beacon has no authentication. Run it on a trusted network.
 
@@ -108,13 +108,13 @@ Use only a cursor from a Beacon response. Another value gives a server error.
 
 ## WebSocket
 
-Connect to `/ws`. Each message is a JSON object with a `type` field.
+Connect to `/events`. Each message is a JSON object with a `type` field.
 
 ```mermaid
 sequenceDiagram
     participant C as Client
     participant B as Beacon
-    C->>B: connect to /ws
+    C->>B: connect to /events
     C->>B: subscribe (key or labels, and since)
     B-->>C: subscribed (subscription_id)
     B-->>C: object (the catch-up objects for since)

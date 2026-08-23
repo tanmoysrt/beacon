@@ -1,7 +1,7 @@
 import argparse
 import logging
-
 import uvicorn
+import uvloop
 
 from beacon.app import app, configure
 
@@ -42,6 +42,7 @@ def main() -> None:
     logging.basicConfig(level=level)
 
     configure(arguments.database)
+    uvloop.install()
 
     uvicorn.run(
         app,

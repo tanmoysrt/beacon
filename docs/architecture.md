@@ -6,7 +6,7 @@ Beacon is one Python process with two parts: a **store** and a **watcher**. Ther
 flowchart TB
     HTTP["HTTP endpoints"] --> MEM
     HTTP -->|"after each write"| IDX
-    WS["WebSocket endpoint /ws"] -->|"subscribe"| IDX
+    WS["WebSocket endpoint /events"] -->|"subscribe"| IDX
     CLEAN["Cleanup task: every hour"] --> MEM
 
     subgraph S["Store"]
