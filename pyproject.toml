@@ -1,0 +1,12 @@
+[project]
+name = "beacon"
+version = "0.1.0"
+description = "A small, generic coordination service"
+requires-python = ">=3.14"
+dependencies = [
+    "fastapi[standard]",
+    "uvicorn[standard]",
+]
+
+[project.scripts]
+beacon = "beacon.main:main"
