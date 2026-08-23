@@ -1,20 +1,15 @@
 import asyncio
+import json
 import time
 from contextlib import asynccontextmanager
 from typing import Annotated, Literal
 
-from fastapi import (
-    FastAPI,
-    HTTPException,
-    Query,
-    Request,
-    WebSocket,
-    WebSocketDisconnect,
-)
+from fastapi import FastAPI, HTTPException, Query, Request
 from pydantic import BaseModel, Field, TypeAdapter, ValidationError
 
 from beacon.store import Store
 from beacon.watcher import Watcher
+from beacon.websocket import WebSocketProtocol
 
 # These are set by configure() before the server starts.
 store: Store | None = None
@@ -26,6 +21,7 @@ def configure(db_path: str) -> None:
     global store, manager
     store = Store(db_path)
     manager = Watcher()
+    WebSocketProtocol.handler = EventHandler()
 
 
 @asynccontextmanager
@@ -105,7 +101,7 @@ async def list_objects(
 @app.put("/objects/{key:path}", response_model=ObjectResponse)
 async def put_object(key: str, request: PutRequest):
     obj = await store.put(key, request.value, request.labels)
-    await manager.notify(obj)
+    manager.notify(obj)
     return obj
 
 
@@ -120,79 +116,62 @@ async def get_object(key: str):
 @app.delete("/objects/{key:path}", response_model=ObjectResponse)
 async def delete_object(key: str):
     obj = await store.delete(key)
-    await manager.notify(obj)
+    manager.notify(obj)
     return obj
 
 
-async def _send_catch_up(connection_id: int, msg: SubscribeMessage) -> None:
+def _send_catch_up(connection_id: int, msg: SubscribeMessage) -> None:
     """Send all objects that changed after msg.since to a new subscriber."""
     if msg.since is None:
         return
     if msg.key is not None:
         obj = store.get(msg.key)
         if obj and obj["timestamp"] >= msg.since:
-            await manager.send_to_connection(connection_id, obj)
+            manager.send_to_connection(connection_id, obj)
         return
     objects, _ = store.list_objects(labels=msg.labels, since=msg.since, limit=100_000)
     for obj in objects:
-        await manager.send_to_connection(connection_id, obj)
+        manager.send_to_connection(connection_id, obj)
 
 
-async def _handle_subscribe_message(
-    websocket: WebSocket, connection_id: int, msg: SubscribeMessage
-) -> None:
-    subscription_id = manager.subscribe(connection_id, key=msg.key, labels=msg.labels)
-    await websocket.send_json(
-        {"type": "subscribed", "subscription_id": subscription_id}
-    )
-    await _send_catch_up(connection_id, msg)
+class EventHandler:
+    """Handles the WebSocket connections that uvicorn passes to the protocol."""
 
+    def on_connect(self, connection_id: int, connection: WebSocketProtocol) -> None:
+        manager.connect(connection_id, connection)
 
-async def _handle_unsubscribe_message(
-    websocket: WebSocket, msg: UnsubscribeMessage
-) -> None:
-    manager.unsubscribe(msg.subscription_id)
-    await websocket.send_json(
-        {"type": "unsubscribed", "subscription_id": msg.subscription_id}
-    )
-
-
-async def _dispatch_websocket_message(
-    websocket: WebSocket, connection_id: int, msg: WebsocketMessage
-) -> None:
-    if isinstance(msg, SubscribeMessage):
-        await _handle_subscribe_message(websocket, connection_id, msg)
-    elif isinstance(msg, UnsubscribeMessage):
-        await _handle_unsubscribe_message(websocket, msg)
-
-
-async def _handle_events(websocket: WebSocket, connection_id: int) -> None:
-    while True:
-        raw = await websocket.receive_json()
-        try:
-            msg = _websocket_adapter.validate_python(raw)
-        except ValidationError as exc:
-            await websocket.send_json(
-                {
-                    "type": "error",
-                    "message": f"validation error: {exc}",
-                    "data": raw,
-                }
-            )
-            continue
-        await _dispatch_websocket_message(websocket, connection_id, msg)
-
-
-@app.websocket("/events")
-async def handle_websocket(websocket: WebSocket):
-    """Accept a WebSocket connection and process event messages until it closes."""
-    await websocket.accept()
-    connection_id = id(websocket)
-    manager.connect(connection_id, websocket)
-
-    try:
-        await _handle_events(websocket, connection_id)
-    except WebSocketDisconnect:
-        pass
-    finally:
+    def on_disconnect(self, connection_id: int) -> None:
         manager.disconnect(connection_id)
+
+    def on_message(
+        self, connection_id: int, connection: WebSocketProtocol, raw: str
+    ) -> None:
+        try:
+            data = json.loads(raw)
+            msg = _websocket_adapter.validate_python(data)
+        except (ValueError, ValidationError) as exc:
+            connection.send(
+                json.dumps(
+                    {"type": "error", "message": f"validation error: {exc}", "data": raw}
+                )
+            )
+            return
+
+        if isinstance(msg, SubscribeMessage):
+            subscription_id = manager.subscribe(
+                connection_id, key=msg.key, labels=msg.labels
+            )
+            connection.send(
+                json.dumps(
+                    {"type": "subscribed", "subscription_id": subscription_id}
+                )
+            )
+            _send_catch_up(connection_id, msg)
+            return
+
+        manager.unsubscribe(msg.subscription_id)
+        connection.send(
+            json.dumps(
+                {"type": "unsubscribed", "subscription_id": msg.subscription_id}
+            )
+        )

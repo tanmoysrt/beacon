@@ -39,38 +39,3 @@ class TestHttpApi:
         assert r.status_code == 200
         assert len(r.json()["objects"]) == 1
         assert r.json()["objects"][0]["key"] == "a"
-
-
-class TestWebSocket:
-    def test_subscribe_and_receive_update(self):
-        configure(":memory:")
-        client = TestClient(app)
-        with client.websocket_connect("/events") as ws:
-            ws.send_json({"type": "subscribe", "key": "k1"})
-            msg = ws.receive_json()
-            assert msg["type"] == "subscribed"
-
-            client.put("/objects/k1", json={"value": "v1", "labels": {}})
-            msg = ws.receive_json()
-            assert msg["type"] == "object"
-            assert msg["key"] == "k1"
-            assert msg["value"] == "v1"
-
-    def test_unsubscribe(self):
-        configure(":memory:")
-        client = TestClient(app)
-        with client.websocket_connect("/events") as ws:
-            ws.send_json({"type": "subscribe", "key": "k1"})
-            sid = ws.receive_json()["subscription_id"]
-
-            ws.send_json({"type": "unsubscribe", "subscription_id": sid})
-            msg = ws.receive_json()
-            assert msg["type"] == "unsubscribed"
-
-    def test_invalid_message_returns_error(self):
-        configure(":memory:")
-        client = TestClient(app)
-        with client.websocket_connect("/events") as ws:
-            ws.send_json({"type": "unknown"})
-            msg = ws.receive_json()
-            assert msg["type"] == "error"

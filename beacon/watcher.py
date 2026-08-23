@@ -1,9 +1,12 @@
 from __future__ import annotations
 
-import asyncio
+import json
 from dataclasses import dataclass, field
 
-from fastapi import WebSocket
+from beacon.websocket import WebSocketProtocol
+
+# A slow consumer that reaches this much buffered data loses new messages.
+BUFFER_LIMIT = 1 << 20
 
 
 @dataclass
@@ -26,13 +29,11 @@ class Watcher:
         self._label_watchers: dict[tuple[str, str], set[int]] = {}
         self._subscriptions: dict[int, Subscription] = {}
         self._connection_subscriptions: dict[int, set[int]] = {}
-        self._connection_locks: dict[int, asyncio.Lock] = {}
-        self._websockets: dict[int, WebSocket] = {}
+        self._connections: dict[int, WebSocketProtocol] = {}
 
-    def connect(self, connection_id: int, websocket: WebSocket) -> None:
+    def connect(self, connection_id: int, connection: WebSocketProtocol) -> None:
         """Register a new WebSocket connection."""
-        self._websockets[connection_id] = websocket
-        self._connection_locks[connection_id] = asyncio.Lock()
+        self._connections[connection_id] = connection
         self._connection_subscriptions[connection_id] = set()
 
     def disconnect(self, connection_id: int) -> None:
@@ -40,8 +41,7 @@ class Watcher:
         for subscription_id in list(self._connection_subscriptions.get(connection_id, set())):
             self._unsubscribe(subscription_id)
         self._connection_subscriptions.pop(connection_id, None)
-        self._websockets.pop(connection_id, None)
-        self._connection_locks.pop(connection_id, None)
+        self._connections.pop(connection_id, None)
 
     def subscribe(
         self,
@@ -73,28 +73,11 @@ class Watcher:
         """Remove one subscription."""
         self._unsubscribe(subscription_id)
 
-    async def send_to_connection(self, connection_id: int, obj: dict) -> None:
-        """Send one object to a connection. Use a lock so messages do not mix."""
-        websocket = self._websockets.get(connection_id)
-        lock = self._connection_locks.get(connection_id)
-        if websocket is None or lock is None:
-            return
+    def send_to_connection(self, connection_id: int, obj: dict) -> None:
+        """Send one object to a connection."""
+        self._send(connection_id, _encode(obj))
 
-        msg = {
-            "type": "object",
-            "key": obj["key"],
-            "timestamp": obj["timestamp"],
-            "value": obj["value"],
-            "labels": obj["labels"],
-            "deleted": obj["deleted"],
-        }
-        try:
-            async with lock:
-                await websocket.send_json(msg)
-        except Exception:
-            pass
-
-    async def notify(self, obj: dict) -> None:
+    def notify(self, obj: dict) -> None:
         """Find all matching subscriptions and send the object once per connection."""
         matching_subs: set[int] = set()
 
@@ -119,12 +102,23 @@ class Watcher:
         # Send only one message per connection, even with multiple matching subscriptions.
         connection_ids = {self._subscriptions[sid].connection_id for sid in matching_subs}
 
+        # Encode one time for all connections, not one time for each connection.
+        message = _encode(obj)
         for connection_id in connection_ids:
-            await self.send_to_connection(connection_id, obj)
+            self._send(connection_id, message)
 
     # ------------------------------------------------------------------
     # Internal methods
     # ------------------------------------------------------------------
+
+    def _send(self, connection_id: int, message: str) -> None:
+        connection = self._connections.get(connection_id)
+        if connection is None:
+            return
+        # A direct write has no backpressure, so check what the socket still holds.
+        if connection.buffered_bytes() > BUFFER_LIMIT:
+            return
+        connection.send(message)
 
     def _unsubscribe(self, subscription_id: int) -> None:
         sub = self._subscriptions.pop(subscription_id, None)
@@ -136,3 +130,16 @@ class Watcher:
             self._key_watchers.get(sub.key, set()).discard(subscription_id)
         for label in sub.labels.items():
             self._label_watchers.get(label, set()).discard(subscription_id)
+
+
+def _encode(obj: dict) -> str:
+    return json.dumps(
+        {
+            "type": "object",
+            "key": obj["key"],
+            "timestamp": obj["timestamp"],
+            "value": obj["value"],
+            "labels": obj["labels"],
+            "deleted": obj["deleted"],
+        }
+    )

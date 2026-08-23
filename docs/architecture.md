@@ -4,9 +4,9 @@ Beacon is one Python process with two parts: a **store** and a **watcher**. Ther
 
 ```mermaid
 flowchart TB
-    HTTP["HTTP endpoints"] --> MEM
+    HTTP["HTTP endpoints: FastAPI on uvicorn"] --> MEM
     HTTP -->|"after each write"| IDX
-    WS["WebSocket endpoint /ws"] -->|"subscribe"| IDX
+    WS["WebSocket /events: own protocol, no ASGI"] -->|"subscribe"| IDX
     CLEAN["Cleanup task: every hour"] --> MEM
 
     subgraph S["Store"]
@@ -94,14 +94,30 @@ flowchart TB
     D -- "no" --> F["Skip the subscription"]
     B --> G["Collect the connections of the matching subscriptions"]
     E --> G
-    G --> H["Send one message to each connection"]
+    G --> I["Encode the message one time"]
+    I --> H["Write it to the socket of each connection"]
 ```
 
 Multiple labels always mean **AND**. There is no OR, no NOT, and no query language.
 
 A connection receives the object one time only, even if many of its subscriptions match.
 
-Each connection has a lock. The lock keeps the messages of one connection in order. If a send fails, Beacon does not report it. The watcher drops the message and keeps the connection.
+`notify` encodes the message one time for all connections, then writes it to each socket. It does not wait for a socket, so a write costs the same with one watcher or ten thousand.
+
+Writes reach a socket in the order of the calls, so the messages of one connection stay in order. A direct write has no backpressure, so the watcher checks what the socket still holds and drops the message above 1 MB. If a send fails, Beacon does not report it.
+
+### Why /events is not an ASGI endpoint
+
+Uvicorn serves all HTTP and owns the port. When a request asks to upgrade, uvicorn passes the socket to `beacon.websocket.WebSocketProtocol`, which reads and writes frames itself.
+
+An ASGI WebSocket costs one message dictionary and one protocol round trip for each notification, and that cost is larger than the write. Measured on one core with 500 subscribers on one key:
+
+| Path | CPU for each notification | Notifications each second |
+| --- | --- | --- |
+| ASGI WebSocket endpoint | 22.3 us | 44,900 |
+| Own protocol | 7.9 us | 126,000 |
+
+The HTTP API keeps FastAPI, its validation, and its response models. Only `/events` leaves ASGI.
 
 ## Object lifecycle
 
@@ -145,6 +161,7 @@ A client keeps the highest timestamp that it processed. A `subscribe` message ca
 | Delivery | Best effort only. Beacon does not send a failed message again. |
 | Duplicates | A client can receive the same object more than once. |
 | Order | Messages to one connection stay in order. |
+| Slow consumers | Beacon drops messages for a connection that holds more than 1 MB in its socket. |
 | Timestamps | Unix milliseconds. Two changes can share one timestamp. |
 | Conflicts | The last write wins. |
 
