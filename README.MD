@@ -4,42 +4,26 @@ Beacon is a small coordination service.
 
 Beacon keeps key-value objects and tells clients when the objects change. It does not know what an object means. It gives you storage, labels, timestamps, and change notifications. Your application gives the meaning.
 
-## Data model
-
-An object has five fields and nothing more:
-
-| Field       | Type           | Description                                               |
-| ----------- | -------------- | --------------------------------------------------------- |
-| `key`       | string         | The identifier. Slashes are allowed.                      |
-| `timestamp` | integer        | The time of the last change, in Unix milliseconds.        |
-| `value`     | string or null | A value that Beacon does not read.                        |
-| `labels`    | object         | String-to-string pairs. Clients select objects with them. |
-| `deleted`   | boolean        | `true` for a tombstone.                                   |
-
-## How Beacon works
-
-Beacon runs as one process:
-
-- The **store** keeps all current objects in memory, and writes each change to SQLite.
-- The **watcher** keeps an index of subscriptions, and sends each change to the clients that watch it.
-
-At startup, Beacon reads all objects from SQLite into memory.
-
 ## Install
 
-```bash
-pip install -e .
-```
-
 Beacon needs Python 3.14 or later.
+
+```bash
+# PIP
+pip install git+https://github.com/tanmoysrt/beacon.git
+
+# UV
+uv tool install git+https://github.com/tanmoysrt/beacon.git
+
+# PIPX
+pipx install git+https://github.com/tanmoysrt/beacon.git
+```
 
 ## Run
 
 ```bash
 beacon --host 127.0.0.1 --port 8000 --database beacon.db
 ```
-
-All three options have defaults. The values above are the defaults.
 
 ## Quick start
 

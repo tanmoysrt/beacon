@@ -1,13 +1,22 @@
+[build-system]
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
 [project]
 name = "beacon"
 version = "0.1.0"
 description = "A small coordination service with object change streaming"
 requires-python = ">=3.14"
+license = "MIT"
+license-files = ["LICENSE"]
 dependencies = [
     "fastapi[standard]",
     "uvicorn[standard]",
     "uvloop",
 ]
+
+[tool.setuptools]
+packages = ["beacon"]
 
 [project.optional-dependencies]
 dev = [
