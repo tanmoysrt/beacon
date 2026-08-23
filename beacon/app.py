@@ -83,14 +83,6 @@ WebsocketMessage = Annotated[
 _websocket_adapter = TypeAdapter(WebsocketMessage)
 
 
-def _extract_labels(request: Request) -> dict[str, str]:
-    labels: dict[str, str] = {}
-    for name, value in request.query_params.multi_items():
-        if name.startswith("label."):
-            labels[name[6:]] = value
-    return labels
-
-
 @app.get("/objects", response_model=ListResponse)
 async def list_objects(
     request: Request,
@@ -99,7 +91,11 @@ async def list_objects(
     limit: Annotated[int, Query(ge=1, le=1000)] = 100,
     cursor: Annotated[str | None, Query()] = None,
 ):
-    labels = _extract_labels(request)
+    labels = {
+        name.removeprefix("label."): value
+        for name, value in request.query_params.multi_items()
+        if name.startswith("label.")
+    }
     objects, next_cursor = store.list_objects(
         prefix=prefix, since=since, labels=labels, limit=limit, cursor=cursor
     )
