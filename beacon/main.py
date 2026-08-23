@@ -1,4 +1,5 @@
 import argparse
+import logging
 
 import uvicorn
 
@@ -7,7 +8,9 @@ from beacon.app import app, configure
 
 def main() -> None:
     """Parse arguments, configure the application, and start the server."""
-    parser = argparse.ArgumentParser(description="Beacon coordination service")
+    parser = argparse.ArgumentParser(
+        description="A small coordination service with object change streaming"
+    )
     parser.add_argument(
         "--host",
         type=str,
@@ -26,7 +29,17 @@ def main() -> None:
         default="beacon.db",
         help="Path to SQLite database (default: beacon.db)",
     )
+    parser.add_argument(
+        "--log-level",
+        type=str,
+        default="warning",
+        choices=["debug", "info", "warning", "error", "critical"],
+        help="Logging level (default: warning)",
+    )
     arguments = parser.parse_args()
+
+    level = getattr(logging, arguments.log_level.upper())
+    logging.basicConfig(level=level)
 
     configure(arguments.database)
 
@@ -35,6 +48,7 @@ def main() -> None:
         host=arguments.host,
         port=arguments.port,
         workers=1,
+        log_level=arguments.log_level,
     )
 
 
