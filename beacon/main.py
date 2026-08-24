@@ -44,6 +44,11 @@ def main() -> None:
     configure(arguments.database)
     uvloop.install()
 
+    print(
+        f"Beacon started - listening on http://{arguments.host}:{arguments.port} "
+        f"(database={arguments.database}, log_level={arguments.log_level})"
+    )
+
     uvicorn.run(
         app,
         host=arguments.host,
