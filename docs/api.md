@@ -104,7 +104,7 @@ Beacon sorts the objects by key. The list includes tombstones. Filter them with 
 
 **To read all pages:** send the `next_cursor` value back as `cursor`. Stop when `objects` is empty. Beacon returns a cursor on every page that has objects, also on the last one. An empty `objects` array is the only end signal.
 
-Use only a cursor from a Beacon response. Another value gives a server error.
+Use only a cursor from a Beacon response. Another value gives a `422`.
 
 ## WebSocket
 
@@ -189,7 +189,7 @@ An `error` message shows the reason and the message that caused it. The connecti
 - One connection can hold many subscriptions.
 - A subscription to a key that does not exist is valid. It stays active until the client unsubscribes, or the connection closes.
 - A connection receives one message for each change, also when many of its subscriptions match.
-- A `since` catch-up sends a maximum of **1000** objects. For a larger recovery, use `GET /objects` with pages.
+- A `since` catch-up sends a maximum of **100000** objects. For a larger recovery, use `GET /objects` with pages.
 - A `subscribe` message with no `key` and no `labels` gives a `subscribed` reply, but it never matches an object.
 - An `unsubscribe` with an unknown `subscription_id` gives an `unsubscribed` reply.
 - Beacon does not check the owner of a `subscription_id`. Any connection can remove any subscription.
@@ -212,5 +212,5 @@ Two changes can share one timestamp. Compare on the key and the timestamp togeth
 | --- | --- |
 | `200` | The request was good. |
 | `404` | `GET /objects/{key}` found no object. |
-| `422` | The body or a query parameter is not valid. |
-| `500` | A write to SQLite failed, or the `cursor` is not valid. |
+| `422` | The body, a query parameter, or the `cursor` is not valid. |
+| `500` | A write to SQLite failed. |

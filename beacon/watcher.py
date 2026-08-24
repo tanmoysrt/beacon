@@ -1,9 +1,12 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 from dataclasses import dataclass, field
 
 from fastapi import WebSocket
+
+_logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -92,7 +95,9 @@ class Watcher:
             async with lock:
                 await websocket.send_json(msg)
         except Exception:
-            pass
+            _logger.debug(
+                "dropped message for connection %s: send failed", connection_id
+            )
 
     async def notify(self, obj: dict) -> None:
         """Find all matching subscriptions and send the object once per connection."""

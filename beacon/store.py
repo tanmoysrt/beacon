@@ -10,9 +10,9 @@ class Store:
     """Stores objects in memory and persists them to SQLite."""
 
     def __init__(self, db_path: str):
-        # WAL mode lets readers and writers work at the same time.
         self._db = sqlite3.connect(db_path, check_same_thread=False)
         self._db.execute("PRAGMA journal_mode=WAL")
+        self._db.execute("PRAGMA synchronous=NORMAL")
         self._db.execute(
             """
             CREATE TABLE IF NOT EXISTS objects (
@@ -24,18 +24,16 @@ class Store:
             )
             """
         )
-        # This index makes the cleanup task fast.
         self._db.execute(
             "CREATE INDEX IF NOT EXISTS idx_deleted_timestamp ON objects(deleted, timestamp)"
         )
         self._objects: dict[str, dict[str, Any]] = {}
         self._load_from_db()
+
         # SQLite can process only one write at a time. This lock prevents conflicts.
         self._lock = asyncio.Lock()
 
-    async def put(
-        self, key: str, value: str, labels: dict[str, str]
-    ) -> dict[str, Any]:
+    async def put(self, key: str, value: str, labels: dict[str, str]) -> dict[str, Any]:
         async with self._lock:
             timestamp = int(time.time() * 1000)
             obj = {
@@ -77,12 +75,15 @@ class Store:
     ) -> tuple[list[dict[str, Any]], str | None]:
         last_key = None
         if cursor:
-            last_key = json.loads(base64.b64decode(cursor).decode())["key"]
+            try:
+                last_key = json.loads(base64.b64decode(cursor).decode())["key"]
+            except (ValueError, KeyError, TypeError):
+                raise ValueError("invalid cursor") from None
 
         limit = min(max(limit, 1), 1000)
 
         results: list[dict[str, Any]] = []
-        for key in sorted(self._objects.keys()):
+        for key in sorted(self._objects):
             if last_key and key <= last_key:
                 continue
             obj = self._objects[key]
@@ -115,13 +116,10 @@ class Store:
         """Remove tombstones that are older than cutoff_ms from memory and SQLite."""
         async with self._lock:
             await asyncio.to_thread(self._cleanup_database, cutoff_ms)
-            to_remove = [
-                key
-                for key, obj in self._objects.items()
-                if obj["deleted"] and obj["timestamp"] < cutoff_ms
-            ]
-            for key in to_remove:
-                del self._objects[key]
+            for key in list(self._objects):
+                obj = self._objects[key]
+                if obj["deleted"] and obj["timestamp"] < cutoff_ms:
+                    del self._objects[key]
 
     # ------------------------------------------------------------------
     # Internal methods

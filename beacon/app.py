@@ -1,6 +1,9 @@
 import asyncio
+import itertools
+import json
+import logging
 import time
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, suppress
 from typing import Annotated, Literal
 
 from fastapi import (
@@ -20,6 +23,12 @@ from beacon.watcher import Watcher
 store: Store | None = None
 manager: Watcher | None = None
 
+CLEANUP_INTERVAL_S = 3600
+TOMBSTONE_TTL_MS = 7 * 24 * 3600 * 1000
+CATCH_UP_LIMIT = 100_000
+
+connection_ids = itertools.count(1)
+
 
 def configure(db_path: str) -> None:
     """Create the store and watcher with the given database path."""
@@ -34,13 +43,19 @@ async def lifespan(app: FastAPI):
 
     async def _cleanup() -> None:
         while True:
-            await asyncio.sleep(3600)
-            cutoff = int(time.time() * 1000) - 7 * 24 * 3600 * 1000
-            await store.cleanup(cutoff)
+            await asyncio.sleep(CLEANUP_INTERVAL_S)
+            try:
+                cutoff = int(time.time() * 1000) - TOMBSTONE_TTL_MS
+                await store.cleanup(cutoff)
+            except Exception:
+                logging.getLogger(__name__).exception("tombstone cleanup failed")
 
     task = asyncio.create_task(_cleanup())
     yield
     task.cancel()
+
+    with suppress(asyncio.CancelledError):
+        await task
 
 
 app = FastAPI(lifespan=lifespan)
@@ -48,7 +63,7 @@ app = FastAPI(lifespan=lifespan)
 
 class PutRequest(BaseModel):
     value: str
-    labels: dict[str, str] = {}
+    labels: dict[str, str] = Field(default_factory=dict)
 
 
 class ObjectResponse(BaseModel):
@@ -96,9 +111,14 @@ async def list_objects(
         for name, value in request.query_params.multi_items()
         if name.startswith("label.")
     }
-    objects, next_cursor = store.list_objects(
-        prefix=prefix, since=since, labels=labels, limit=limit, cursor=cursor
-    )
+
+    try:
+        objects, next_cursor = store.list_objects(
+            prefix=prefix, since=since, labels=labels, limit=limit, cursor=cursor
+        )
+    except ValueError:
+        raise HTTPException(status_code=422, detail="invalid cursor")
+
     return {"objects": objects, "next_cursor": next_cursor}
 
 
@@ -128,12 +148,17 @@ async def _send_catch_up(connection_id: int, msg: SubscribeMessage) -> None:
     """Send all objects that changed after msg.since to a new subscriber."""
     if msg.since is None:
         return
+
     if msg.key is not None:
         obj = store.get(msg.key)
         if obj and obj["timestamp"] >= msg.since:
             await manager.send_to_connection(connection_id, obj)
         return
-    objects, _ = store.list_objects(labels=msg.labels, since=msg.since, limit=100_000)
+
+    objects, _ = store.list_objects(
+        labels=msg.labels, since=msg.since, limit=CATCH_UP_LIMIT
+    )
+
     for obj in objects:
         await manager.send_to_connection(connection_id, obj)
 
@@ -168,7 +193,13 @@ async def _dispatch_websocket_message(
 
 async def _handle_events(websocket: WebSocket, connection_id: int) -> None:
     while True:
-        raw = await websocket.receive_json()
+        try:
+            raw = await websocket.receive_json()
+        except json.JSONDecodeError as exc:
+            await websocket.send_json(
+                {"type": "error", "message": f"invalid JSON: {exc}", "data": None}
+            )
+            continue
         try:
             msg = _websocket_adapter.validate_python(raw)
         except ValidationError as exc:
@@ -187,7 +218,7 @@ async def _handle_events(websocket: WebSocket, connection_id: int) -> None:
 async def handle_websocket(websocket: WebSocket):
     """Accept a WebSocket connection and process event messages until it closes."""
     await websocket.accept()
-    connection_id = id(websocket)
+    connection_id = next(connection_ids)
     manager.connect(connection_id, websocket)
 
     try:
